@@ -191,6 +191,7 @@ import type {
     StringMappingType,
     StructuredType,
     SubstitutionType,
+    SymbolDocumentation,
     TemplateLiteralType,
     ThisTypePredicate,
     TupleType,
@@ -268,6 +269,7 @@ export type {
     StringMappingType,
     StructuredType,
     SubstitutionType,
+    SymbolDocumentation,
     SyntheticProjectId,
     TemplateLiteralType,
     TextEdit,
@@ -6427,6 +6429,45 @@ export class Checker {
                     project: owner.project.id,
                     symbol: symbol.reference,
                 });
+            },
+        );
+    }
+
+    /**
+     * Batched equivalent of calling {@link getJsDocTagsOfSymbol} and
+     * {@link getDocumentationCommentOfSymbol} for each symbol: a single request
+     * returns, per input symbol (order preserved), exactly what the two
+     * individual calls would return.
+     */
+    get getSymbolDocumentations(): {
+        (symbols: readonly Symbol[]): readonly SymbolDocumentation[];
+        gen(symbols: readonly Symbol[]): Generator<ProtocolRequest, readonly SymbolDocumentation[], ProtocolResponse["result"]>;
+    } {
+        const owner = this;
+        return cacheGeneratorMethod(
+            owner,
+            "getSymbolDocumentations",
+            function (symbols: readonly Symbol[]): readonly SymbolDocumentation[] {
+                if (symbols.length === 0) {
+                    return [];
+                }
+                const data = owner.client.apiRequest("getSymbolDocumentations", {
+                    snapshot: owner.snapshotId,
+                    project: owner.project.id,
+                    symbols: symbols.map(s => s.reference),
+                });
+                return (data ?? []).map(d => ({ tags: d?.tags ?? [], comment: d?.comment ?? "" }));
+            },
+            function* (symbols: readonly Symbol[]): Generator<ProtocolRequest, readonly SymbolDocumentation[], ProtocolResponse["result"]> {
+                if (symbols.length === 0) {
+                    return [];
+                }
+                const data = yield* apiRequest("getSymbolDocumentations", {
+                    snapshot: owner.snapshotId,
+                    project: owner.project.id,
+                    symbols: symbols.map(s => s.reference),
+                });
+                return (data ?? []).map(d => ({ tags: d?.tags ?? [], comment: d?.comment ?? "" }));
             },
         );
     }

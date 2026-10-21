@@ -1722,6 +1722,7 @@ describe("API - generator batching", { concurrency: areTestsFiltered() }, () => 
                 parityCase("Checker", "getMemberInModuleExports", checker.getMemberInModuleExports, assertOptionalSymbolsEquivalent, moduleSymbol, "Derived"),
                 parityCase("Checker", "getJsDocTagsOfSymbol", checker.getJsDocTagsOfSymbol, assertDeepEquivalent, combineSymbol),
                 parityCase("Checker", "getDocumentationCommentOfSymbol", checker.getDocumentationCommentOfSymbol, assertDeepEquivalent, combineSymbol),
+                parityCase("Checker", "getSymbolDocumentations", checker.getSymbolDocumentations, assertDeepEquivalent, [combineSymbol, localCombineSymbol]),
                 parityCase("Checker", "getTypeArguments", checker.getTypeArguments, assertTypeArraysEquivalent, boxedType),
                 parityCase("Checker", "getNonMissingTypeOfSymbol", checker.getNonMissingTypeOfSymbol, assertTypesEquivalent, boxedOptSymbol),
                 parityCase("Checker", "isReadonlySymbol", checker.isReadonlySymbol, assertDeepEquivalent, boxedOptSymbol),

@@ -174,6 +174,7 @@ import type {
     StringMappingType,
     StructuredType,
     SubstitutionType,
+    SymbolDocumentation,
     TemplateLiteralType,
     ThisTypePredicate,
     TupleType,
@@ -251,6 +252,7 @@ export type {
     StringMappingType,
     StructuredType,
     SubstitutionType,
+    SymbolDocumentation,
     SyntheticProjectId,
     TemplateLiteralType,
     TextEdit,
@@ -3100,6 +3102,24 @@ export class Checker {
             project: this.project.id,
             symbol: symbol.reference,
         });
+    }
+
+    /**
+     * Batched equivalent of calling {@link getJsDocTagsOfSymbol} and
+     * {@link getDocumentationCommentOfSymbol} for each symbol: a single request
+     * returns, per input symbol (order preserved), exactly what the two
+     * individual calls would return.
+     */
+    async getSymbolDocumentations(symbols: readonly Symbol[]): Promise<readonly SymbolDocumentation[]> {
+        if (symbols.length === 0) {
+            return [];
+        }
+        const data = await this.client.apiRequest("getSymbolDocumentations", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            symbols: symbols.map(s => s.reference),
+        });
+        return (data ?? []).map(d => ({ tags: d?.tags ?? [], comment: d?.comment ?? "" }));
     }
 
     /**

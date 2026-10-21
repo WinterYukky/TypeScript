@@ -178,6 +178,7 @@ export interface APIMethodInfo {
     getMemberInModuleExports: APIMethod<GetMemberInModuleExportsParams, SymbolResponse | null>;
     getJsDocTags: APIMethod<CheckerSymbolParams, JSDocTagInfo[] | null>;
     getDocumentationComment: APIMethod<CheckerSymbolParams, string>;
+    getSymbolDocumentations: APIMethod<CheckerSymbolsParams, SymbolDocumentation[]>;
     isArrayType: APIMethod<CheckerTypeParams, boolean>;
     isReadonlySymbol: APIMethod<CheckerSymbolParams, boolean>;
     getReferencesToSymbolInFile: APIMethod<GetReferencesToSymbolInFileParams, string[]>;
@@ -946,6 +947,25 @@ export interface JSDocTagInfo {
     text?: string | undefined;
 }
 
+/**
+ * CheckerSymbolsParams is the batched form of CheckerSymbolParams: the same
+ * checker, many symbols.
+ */
+export interface CheckerSymbolsParams {
+    snapshot: number;
+    project: ProjectId;
+    symbols: readonly SymbolReference[] | null;
+}
+
+/**
+ * SymbolDocumentation carries, for one symbol, exactly what the individual
+ * "getJsDocTags" and "getDocumentationComment" methods would return.
+ */
+export interface SymbolDocumentation {
+    tags: JSDocTagInfo[] | null;
+    comment: string;
+}
+
 /** GetReferencesToSymbolInFileParams are the parameters for the getReferencesToSymbolInFile method. */
 export interface GetReferencesToSymbolInFileParams {
     snapshot: number;
@@ -1258,6 +1278,7 @@ export interface BatchRequest {
         | "getSuggestionDiagnostics"
         | "getSymbolAtLocation"
         | "getSymbolAtPosition"
+        | "getSymbolDocumentations"
         | "getSymbolOfDeclaration"
         | "getSymbolOfDeclarationForChecker"
         | "getSymbolOfNode"
@@ -1440,6 +1461,7 @@ export interface BatchResponse {
         | "getSuggestionDiagnostics"
         | "getSymbolAtLocation"
         | "getSymbolAtPosition"
+        | "getSymbolDocumentations"
         | "getSymbolOfDeclaration"
         | "getSymbolOfDeclarationForChecker"
         | "getSymbolOfNode"

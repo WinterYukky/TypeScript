@@ -7186,6 +7186,27 @@ export function add(a: number, b: number): number { return a + b; }
         assert.ok(!doc.includes("@param"), "Documentation comment should not include tags");
     });
 
+    test("getSymbolDocumentations returns, per symbol, what the individual calls return", () => {
+        using api = spawnAPI(docFiles);
+
+        const snapshot = api.createSnapshot({ openProjects: ["/tsconfig.json"] });
+        const project = snapshot.getConfiguredProject("/tsconfig.json")!;
+        const checker = project.checker;
+        const addSymbol = checker.getSymbolAtPosition("/src/main.ts", docFiles["/src/main.ts"].indexOf("add(a"));
+        assert.ok(addSymbol);
+        const paramSymbol = checker.getSymbolAtPosition("/src/main.ts", docFiles["/src/main.ts"].indexOf("a: number"));
+        assert.ok(paramSymbol);
+        const symbols = [addSymbol, paramSymbol, addSymbol];
+        const batched = checker.getSymbolDocumentations(symbols);
+        assert.equal(batched.length, symbols.length);
+        for (let i = 0; i < symbols.length; i++) {
+            assert.deepEqual(batched[i].tags, checker.getJsDocTagsOfSymbol(symbols[i]));
+            assert.equal(batched[i].comment, checker.getDocumentationCommentOfSymbol(symbols[i]));
+        }
+        assert.ok(batched[0].comment.includes("Adds two numbers together"));
+        assert.deepEqual(checker.getSymbolDocumentations([]), []);
+    });
+
     test("getJsDocTags returns structured tag name/text pairs", () => {
         using api = spawnAPI(docFiles);
 

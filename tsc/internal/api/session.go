@@ -1177,6 +1177,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetJSDocTags(ctx, parsed.(*CheckerSymbolParams))
 	case string(MethodGetDocumentationComment):
 		return s.handleGetDocumentationComment(ctx, parsed.(*CheckerSymbolParams))
+	case string(MethodGetSymbolDocumentations):
+		return s.handleGetSymbolDocumentations(ctx, parsed.(*CheckerSymbolsParams))
 	case string(MethodIsArrayType):
 		return s.handleIsArrayType(ctx, parsed.(*CheckerTypeParams))
 	case string(MethodIsReadonlySymbol):
@@ -4945,6 +4947,40 @@ func (s *Session) handleGetDocumentationComment(ctx context.Context, params *Che
 	}
 
 	return ls.GetSymbolDocumentationComment(setup.checker, symbol), nil
+}
+
+// handleGetSymbolDocumentations is the batched equivalent of calling
+// "getJsDocTags" and "getDocumentationComment" for each symbol. Each element of
+// the response carries exactly what the two individual methods would return for
+// the same symbol (input order preserved); a symbol that would fail the
+// individual call fails the batch the same way.
+func (s *Session) handleGetSymbolDocumentations(ctx context.Context, params *CheckerSymbolsParams) ([]*SymbolDocumentation, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	results := make([]*SymbolDocumentation, len(params.Symbols))
+	for i, ref := range params.Symbols {
+		symbol, err := setup.resolveSymbolHandle(ref)
+		if err != nil {
+			return nil, err
+		}
+		doc := &SymbolDocumentation{}
+		if symbol != nil {
+			tags := ls.GetSymbolJSDocTags(symbol)
+			if len(tags) > 0 {
+				doc.Tags = make([]*JSDocTagInfo, len(tags))
+				for j, tag := range tags {
+					doc.Tags[j] = &JSDocTagInfo{Name: tag.Name, Text: tag.Text}
+				}
+			}
+			doc.Comment = ls.GetSymbolDocumentationComment(setup.checker, symbol)
+		}
+		results[i] = doc
+	}
+	return results, nil
 }
 
 // handleGetTypeArguments returns the type arguments of a type reference.

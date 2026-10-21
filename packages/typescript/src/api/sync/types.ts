@@ -511,6 +511,11 @@ export interface IndexInfo {
 /**
  * A single JSDoc tag attached to a symbol — e.g. `@param`, `@returns`.
  */
+/** JSDoc tags and rendered documentation comment of one symbol (see `Checker.getSymbolDocumentations`). */
+export interface SymbolDocumentation {
+    readonly tags: readonly JSDocTagInfo[];
+    readonly comment: string;
+}
 export interface JSDocTagInfo {
     /** The tag name, without the leading `@` — e.g. `"param"`. */
     readonly name: string;

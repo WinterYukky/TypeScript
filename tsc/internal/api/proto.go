@@ -215,6 +215,7 @@ const (
 	MethodGetMemberInModuleExports          Method = "getMemberInModuleExports"
 	MethodGetJSDocTags                      Method = "getJsDocTags"
 	MethodGetDocumentationComment           Method = "getDocumentationComment"
+	MethodGetSymbolDocumentations           Method = "getSymbolDocumentations"
 	MethodIsArrayType                       Method = "isArrayType"
 	MethodIsReadonlySymbol                  Method = "isReadonlySymbol"
 
@@ -736,6 +737,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodGetMemberInModuleExports:          unmarshallerFor[GetMemberInModuleExportsParams],
 	MethodGetJSDocTags:                      unmarshallerFor[CheckerSymbolParams],
 	MethodGetDocumentationComment:           unmarshallerFor[CheckerSymbolParams],
+	MethodGetSymbolDocumentations:           unmarshallerFor[CheckerSymbolsParams],
 	MethodIsArrayType:                       unmarshallerFor[CheckerTypeParams],
 	MethodIsReadonlySymbol:                  unmarshallerFor[CheckerSymbolParams],
 	MethodGetReferencesToSymbolInFile:       unmarshallerFor[GetReferencesToSymbolInFileParams],
@@ -1855,6 +1857,21 @@ type CheckerSymbolParams struct {
 	Snapshot SnapshotID      `json:"snapshot"`
 	Project  project.ID      `json:"project"`
 	Symbol   SymbolReference `json:"symbol"`
+}
+
+// CheckerSymbolsParams is the batched form of CheckerSymbolParams: the same
+// checker, many symbols.
+type CheckerSymbolsParams struct {
+	Snapshot SnapshotID        `json:"snapshot"`
+	Project  project.ID        `json:"project"`
+	Symbols  []SymbolReference `json:"symbols"`
+}
+
+// SymbolDocumentation carries, for one symbol, exactly what the individual
+// "getJsDocTags" and "getDocumentationComment" methods would return.
+type SymbolDocumentation struct {
+	Tags    []*JSDocTagInfo `json:"tags"`
+	Comment string          `json:"comment"`
 }
 
 // JSDocTagInfo is a single JSDoc tag, mirroring Strada's JSDocTagInfo but with the tag text
