@@ -4136,14 +4136,24 @@ function toEmitOutput(response: ProtocolEmitOutputResponse): EmitOutput {
     };
 }
 
-/** Filter for {@link Checker.getMembersOfType}; see `MemberFilter` for the semantics of each field. */
+/**
+ * Filter for {@link Checker.getMembersOfType}: neutral predicates the caller combines
+ * to describe the members it will render (see `MemberFilter` for each field).
+ */
 export interface MemberFilterInput {
-    excludeInternal?: boolean;
-    excludePrivate?: boolean;
-    excludeDeprecated?: boolean;
-    excludeNames?: readonly string[];
-    ownerSymbols?: readonly Symbol[];
-    parameterPropertyOwner?: Symbol;
+    /** Visibilities to include; empty means all. ECMAScript private names count as private. */
+    visibility?: readonly ("public" | "protected" | "private")[];
+    /** Member kinds to include; empty means all. */
+    kinds?: readonly ("property" | "accessor" | "method" | "parameterProperty")[];
+    /** Drop members whose JSDoc carries any of these tags. */
+    excludeJsDocTags?: readonly string[];
+    /** Drop members whose (wire-form) name matches this RE2 pattern. */
+    excludeNamePattern?: string;
+    /**
+     * Which declaring types to take members from: `undefined` means all, `{}` means the
+     * queried type only, `{ declaringTypes }` adds members declared on those types.
+     */
+    includeInheritedFrom?: { all?: boolean; declaringTypes?: readonly Symbol[]; };
     includeDeclaredType?: boolean;
 }
 
@@ -6533,12 +6543,16 @@ export class Checker {
                     project: owner.project.handle,
                     type: type.id,
                     filter: {
-                        excludeInternal: filter.excludeInternal,
-                        excludePrivate: filter.excludePrivate,
-                        excludeDeprecated: filter.excludeDeprecated,
-                        excludeNames: filter.excludeNames ? [...filter.excludeNames] : undefined,
-                        ownerSymbols: filter.ownerSymbols?.map(symbol => symbol.reference),
-                        parameterPropertyOwner: filter.parameterPropertyOwner?.reference,
+                        visibility: filter.visibility ? [...filter.visibility] : undefined,
+                        kinds: filter.kinds ? [...filter.kinds] : undefined,
+                        excludeJsDocTags: filter.excludeJsDocTags ? [...filter.excludeJsDocTags] : undefined,
+                        excludeNamePattern: filter.excludeNamePattern,
+                        includeInheritedFrom: filter.includeInheritedFrom
+                            ? {
+                                all: filter.includeInheritedFrom.all,
+                                declaringTypes: filter.includeInheritedFrom.declaringTypes?.map(symbol => symbol.reference),
+                            }
+                            : undefined,
                         includeDeclaredType: filter.includeDeclaredType,
                     },
                 });
@@ -6564,12 +6578,16 @@ export class Checker {
                     project: owner.project.handle,
                     type: type.id,
                     filter: {
-                        excludeInternal: filter.excludeInternal,
-                        excludePrivate: filter.excludePrivate,
-                        excludeDeprecated: filter.excludeDeprecated,
-                        excludeNames: filter.excludeNames ? [...filter.excludeNames] : undefined,
-                        ownerSymbols: filter.ownerSymbols?.map(symbol => symbol.reference),
-                        parameterPropertyOwner: filter.parameterPropertyOwner?.reference,
+                        visibility: filter.visibility ? [...filter.visibility] : undefined,
+                        kinds: filter.kinds ? [...filter.kinds] : undefined,
+                        excludeJsDocTags: filter.excludeJsDocTags ? [...filter.excludeJsDocTags] : undefined,
+                        excludeNamePattern: filter.excludeNamePattern,
+                        includeInheritedFrom: filter.includeInheritedFrom
+                            ? {
+                                all: filter.includeInheritedFrom.all,
+                                declaringTypes: filter.includeInheritedFrom.declaringTypes?.map(symbol => symbol.reference),
+                            }
+                            : undefined,
                         includeDeclaredType: filter.includeDeclaredType,
                     },
                 });

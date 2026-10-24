@@ -1718,32 +1718,35 @@ export interface PackageId {
 }
 
 /**
- * MemberFilter selects which properties of a type getMembersOfType returns. It exists so
- * that a traversal tool can describe the members it will certainly visit and receive their
- * declared types in the same response, without the server materializing types for
- * members the tool would have skipped.
+ * MemberFilter selects which properties of a type getMembersOfType returns. It is a
+ * set of neutral predicates the caller combines (like a WHERE clause) to describe the
+ * members it will render, so that no type is materialized for a member it would skip.
+ * Tool-specific policies (jsii's @internal/underscore convention, TypeDoc's @hidden, ...)
+ * are expressed by the caller, not encoded here.
  */
 export interface MemberFilter {
-    /** Drop members tagged @internal or whose name starts with an underscore. */
-    excludeInternal?: boolean | undefined;
-    /** Drop members whose first declaration has the `private` modifier. */
-    excludePrivate?: boolean | undefined;
-    /** Drop members tagged @deprecated. */
-    excludeDeprecated?: boolean | undefined;
-    /** Drop members with these names (e.g. "prototype" on a class's static side). */
-    excludeNames?: string[] | undefined;
     /**
-     * When non-empty, keep a member only if the type declared at its owner node (the
-     * declaration's parent, or grandparent for a constructor parameter property) has
-     * one of these symbols. This is how a tool separates own and erased-base members
-     * from members of named bases it lists elsewhere.
+     * Visibilities to include ("public", "protected", "private"); empty means all.
+     * ECMAScript private names (#x) count as private.
      */
-    ownerSymbols?: SymbolReference[] | undefined;
+    visibility?: string[] | undefined;
     /**
-     * Constructor parameter properties are kept only when their owner type has this
-     * symbol; when nil, parameter properties are dropped.
+     * Member kinds to include ("property", "accessor", "method", "parameterProperty",
+     * the last being a constructor parameter property); empty means all.
      */
-    parameterPropertyOwner?: SymbolReference | undefined;
+    kinds?: string[] | undefined;
+    /** Drop members whose JSDoc carries any of these tags (e.g. "internal", "deprecated"). */
+    excludeJsDocTags?: string[] | undefined;
+    /**
+     * Drop members whose name (in its wire form, as the client sees it) matches this
+     * RE2 pattern, e.g. "^_" or "^(_|prototype$)".
+     */
+    excludeNamePattern?: string | undefined;
+    /**
+     * Which declaring types to take members from. Nil means all (plain
+     * getPropertiesOfType semantics).
+     */
+    includeInheritedFrom?: InheritedMemberFilter | undefined;
     /**
      * Include the declared type of each non-method member (getTypeOfSymbolAtLocation at
      * its first declaration).
@@ -1845,6 +1848,18 @@ export interface ModuleResolutionEntry {
     containingDirectory?: DocumentIdentifier | undefined;
     resolutionMode?: ResolutionMode | undefined;
     result: StaticModuleResolution;
+}
+
+/**
+ * InheritedMemberFilter restricts members by the type that declares them: members
+ * declared on the queried type itself are always kept; with All every base
+ * contributes; otherwise only members declared on one of DeclaringTypes (by symbol)
+ * are kept. The declaring type is the type at the declaration's owner node (its
+ * parent, or grandparent for a constructor parameter property).
+ */
+export interface InheritedMemberFilter {
+    all?: boolean | undefined;
+    declaringTypes?: SymbolReference[] | undefined;
 }
 
 /** CompletionEntryLabelDetailsResponse holds additional label display text for a completion entry. */

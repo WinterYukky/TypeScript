@@ -1888,30 +1888,39 @@ type SymbolDocumentation struct {
 	Comment string          `json:"comment,omitempty"`
 }
 
-// MemberFilter selects which properties of a type getMembersOfType returns. It exists so
-// that a traversal tool can describe the members it will certainly visit and receive their
-// declared types in the same response, without the server materializing types for
-// members the tool would have skipped.
+// MemberFilter selects which properties of a type getMembersOfType returns. It is a
+// set of neutral predicates the caller combines (like a WHERE clause) to describe the
+// members it will render, so that no type is materialized for a member it would skip.
+// Tool-specific policies (jsii's @internal/underscore convention, TypeDoc's @hidden, ...)
+// are expressed by the caller, not encoded here.
 type MemberFilter struct {
-	// Drop members tagged @internal or whose name starts with an underscore.
-	ExcludeInternal bool `json:"excludeInternal,omitempty"`
-	// Drop members whose first declaration has the `private` modifier.
-	ExcludePrivate bool `json:"excludePrivate,omitempty"`
-	// Drop members tagged @deprecated.
-	ExcludeDeprecated bool `json:"excludeDeprecated,omitempty"`
-	// Drop members with these names (e.g. "prototype" on a class's static side).
-	ExcludeNames []string `json:"excludeNames,omitempty"`
-	// When non-empty, keep a member only if the type declared at its owner node (the
-	// declaration's parent, or grandparent for a constructor parameter property) has
-	// one of these symbols. This is how a tool separates own and erased-base members
-	// from members of named bases it lists elsewhere.
-	OwnerSymbols []SymbolReference `json:"ownerSymbols,omitempty"`
-	// Constructor parameter properties are kept only when their owner type has this
-	// symbol; when nil, parameter properties are dropped.
-	ParameterPropertyOwner *SymbolReference `json:"parameterPropertyOwner,omitempty"`
+	// Visibilities to include ("public", "protected", "private"); empty means all.
+	// ECMAScript private names (#x) count as private.
+	Visibility []string `json:"visibility,omitempty"`
+	// Member kinds to include ("property", "accessor", "method", "parameterProperty",
+	// the last being a constructor parameter property); empty means all.
+	Kinds []string `json:"kinds,omitempty"`
+	// Drop members whose JSDoc carries any of these tags (e.g. "internal", "deprecated").
+	ExcludeJsDocTags []string `json:"excludeJsDocTags,omitempty"`
+	// Drop members whose name (in its wire form, as the client sees it) matches this
+	// RE2 pattern, e.g. "^_" or "^(_|prototype$)".
+	ExcludeNamePattern string `json:"excludeNamePattern,omitempty"`
+	// Which declaring types to take members from. Nil means all (plain
+	// getPropertiesOfType semantics).
+	IncludeInheritedFrom *InheritedMemberFilter `json:"includeInheritedFrom,omitempty"`
 	// Include the declared type of each non-method member (getTypeOfSymbolAtLocation at
 	// its first declaration).
 	IncludeDeclaredType bool `json:"includeDeclaredType,omitempty"`
+}
+
+// InheritedMemberFilter restricts members by the type that declares them: members
+// declared on the queried type itself are always kept; with All every base
+// contributes; otherwise only members declared on one of DeclaringTypes (by symbol)
+// are kept. The declaring type is the type at the declaration's owner node (its
+// parent, or grandparent for a constructor parameter property).
+type InheritedMemberFilter struct {
+	All            bool              `json:"all,omitempty"`
+	DeclaringTypes []SymbolReference `json:"declaringTypes,omitempty"`
 }
 
 // GetMembersOfTypeParams are parameters for getMembersOfType.

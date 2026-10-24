@@ -102,7 +102,7 @@ func memberNames(members []*MemberResponse) []string {
 	return names
 }
 
-func TestGetMembersOfTypeFiltersLikeATraversal(t *testing.T) {
+func TestGetMembersOfTypeCombinesPredicatesLikeATraversal(t *testing.T) {
 	t.Parallel()
 	ctx, cleanup := setupMembersTest(t)
 	defer cleanup()
@@ -110,23 +110,24 @@ func TestGetMembersOfTypeFiltersLikeATraversal(t *testing.T) {
 	class := ctx.classSymbol(t, "C")
 	instanceType := ctx.declaredType(t, class)
 
+	// jsii's member policy expressed with the neutral predicates: public/protected
+	// only, no @internal / @deprecated, no underscore names, own members only.
 	members, err := ctx.session.handleGetMembersOfType(t.Context(), &GetMembersOfTypeParams{
 		Snapshot: ctx.snapshot,
 		Project:  ctx.project,
 		Type:     instanceType.Id,
 		Filter: MemberFilter{
-			ExcludeInternal:        true,
-			ExcludePrivate:         true,
-			ExcludeDeprecated:      true,
-			OwnerSymbols:           []SymbolReference{class.Reference},
-			ParameterPropertyOwner: &class.Reference,
-			IncludeDeclaredType:    true,
+			Visibility:           []string{"public", "protected"},
+			ExcludeJsDocTags:     []string{"internal", "deprecated"},
+			ExcludeNamePattern:   "^_",
+			IncludeInheritedFrom: &InheritedMemberFilter{},
+			IncludeDeclaredType:  true,
 		},
 	})
 	assert.NilError(t, err)
-	// baseProp is declared on Base (not an allowed owner); hidden (@internal), secret
-	// (private), _under (underscore), #ecmaPrivate (wire name `__#N@#ecmaPrivate`)
-	// and old (@deprecated) are filtered out.
+	// baseProp is declared on Base (not the queried type); hidden (@internal), secret
+	// (private), _under (underscore), #ecmaPrivate (private) and old (@deprecated) are
+	// filtered out.
 	assert.DeepEqual(t, memberNames(members), []string{"own", "fromCtor", "method"})
 
 	byName := map[string]*MemberResponse{}
@@ -158,7 +159,7 @@ func TestGetMembersOfTypeFiltersLikeATraversal(t *testing.T) {
 	assert.Equal(t, direct.Id, own.DeclaredType.Id)
 }
 
-func TestGetMembersOfTypeOwnerFilterAdmitsErasedBases(t *testing.T) {
+func TestGetMembersOfTypeInheritedFromAndKinds(t *testing.T) {
 	t.Parallel()
 	ctx, cleanup := setupMembersTest(t)
 	defer cleanup()
@@ -172,19 +173,57 @@ func TestGetMembersOfTypeOwnerFilterAdmitsErasedBases(t *testing.T) {
 		Project:  ctx.project,
 		Type:     instanceType.Id,
 		Filter: MemberFilter{
-			ExcludeInternal: true,
-			ExcludePrivate:  true,
-			OwnerSymbols:    []SymbolReference{class.Reference, base.Reference},
+			Visibility:           []string{"public", "protected"},
+			ExcludeNamePattern:   "^_",
+			IncludeInheritedFrom: &InheritedMemberFilter{DeclaringTypes: []SymbolReference{base.Reference}},
 		},
 	})
 	assert.NilError(t, err)
-	names := memberNames(members)
-	assert.Assert(t, strings.Contains(strings.Join(names, ","), "baseProp"), "base members are admitted when the base is an allowed owner: %v", names)
-	assert.Assert(t, strings.Contains(strings.Join(names, ","), "old"), "deprecated members stay without excludeDeprecated: %v", names)
-	assert.Assert(t, !strings.Contains(strings.Join(names, ","), "fromCtor"), "parameter properties are dropped without a parameterPropertyOwner: %v", names)
+	names := strings.Join(memberNames(members), ",")
+	assert.Assert(t, strings.Contains(names, "baseProp"), "base members are admitted when the base is a declaring type: %v", names)
+	assert.Assert(t, strings.Contains(names, "old"), "deprecated members stay without an excluded tag: %v", names)
+	assert.Assert(t, strings.Contains(names, "hidden"), "@internal members stay without an excluded tag: %v", names)
+	assert.Assert(t, !strings.Contains(names, "secret") && !strings.Contains(names, "#ecmaPrivate"), "private members are dropped by visibility: %v", names)
 	for _, m := range members {
 		assert.Assert(t, m.DeclaredType == nil, "no declared types unless requested")
 	}
+
+	// nil IncludeInheritedFrom means every declaring type, like getPropertiesOfType.
+	all, err := ctx.session.handleGetMembersOfType(t.Context(), &GetMembersOfTypeParams{
+		Snapshot: ctx.snapshot,
+		Project:  ctx.project,
+		Type:     instanceType.Id,
+	})
+	assert.NilError(t, err)
+	props, err := ctx.session.handleGetPropertiesOfType(t.Context(), &CheckerTypeParams{Snapshot: ctx.snapshot, Project: ctx.project, Type: instanceType.Id})
+	assert.NilError(t, err)
+	assert.Equal(t, len(all), len(props), "an empty filter returns every property")
+
+	// Kinds select by declaration shape.
+	methods, err := ctx.session.handleGetMembersOfType(t.Context(), &GetMembersOfTypeParams{
+		Snapshot: ctx.snapshot,
+		Project:  ctx.project,
+		Type:     instanceType.Id,
+		Filter:   MemberFilter{Kinds: []string{"method"}},
+	})
+	assert.NilError(t, err)
+	assert.DeepEqual(t, memberNames(methods), []string{"method"})
+	paramProps, err := ctx.session.handleGetMembersOfType(t.Context(), &GetMembersOfTypeParams{
+		Snapshot: ctx.snapshot,
+		Project:  ctx.project,
+		Type:     instanceType.Id,
+		Filter:   MemberFilter{Kinds: []string{"parameterProperty"}},
+	})
+	assert.NilError(t, err)
+	assert.DeepEqual(t, memberNames(paramProps), []string{"fromCtor"})
+
+	_, err = ctx.session.handleGetMembersOfType(t.Context(), &GetMembersOfTypeParams{
+		Snapshot: ctx.snapshot,
+		Project:  ctx.project,
+		Type:     instanceType.Id,
+		Filter:   MemberFilter{ExcludeNamePattern: "("},
+	})
+	assert.ErrorContains(t, err, "invalid excludeNamePattern")
 }
 
 func TestGetSymbolDocumentationsMatchesIndividualCalls(t *testing.T) {

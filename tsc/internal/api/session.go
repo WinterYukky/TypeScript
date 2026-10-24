@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -4991,57 +4992,48 @@ func (s *Session) handleGetMembersOfType(ctx context.Context, params *GetMembers
 	}
 	filter := &params.Filter
 
-	owners := make(map[*ast.Symbol]struct{}, len(filter.OwnerSymbols))
-	for _, ref := range filter.OwnerSymbols {
-		owner, err := setup.resolveSymbolHandle(ref)
+	visibilities := make(map[string]struct{}, len(filter.Visibility))
+	for _, v := range filter.Visibility {
+		visibilities[v] = struct{}{}
+	}
+	kinds := make(map[string]struct{}, len(filter.Kinds))
+	for _, k := range filter.Kinds {
+		kinds[k] = struct{}{}
+	}
+	excludedTags := make(map[string]struct{}, len(filter.ExcludeJsDocTags))
+	for _, tag := range filter.ExcludeJsDocTags {
+		excludedTags[tag] = struct{}{}
+	}
+	var excludeName *regexp.Regexp
+	if filter.ExcludeNamePattern != "" {
+		excludeName, err = regexp.Compile(filter.ExcludeNamePattern)
 		if err != nil {
-			return nil, err
-		}
-		if owner != nil {
-			owners[owner] = struct{}{}
+			return nil, fmt.Errorf("%w: invalid excludeNamePattern: %w", ErrClientError, err)
 		}
 	}
-	var parameterPropertyOwner *ast.Symbol
-	if filter.ParameterPropertyOwner != nil {
-		parameterPropertyOwner, err = setup.resolveSymbolHandle(*filter.ParameterPropertyOwner)
-		if err != nil {
-			return nil, err
+	var declaringTypes map[*ast.Symbol]struct{}
+	if filter.IncludeInheritedFrom != nil && !filter.IncludeInheritedFrom.All {
+		declaringTypes = make(map[*ast.Symbol]struct{}, len(filter.IncludeInheritedFrom.DeclaringTypes)+1)
+		if own := t.Symbol(); own != nil {
+			declaringTypes[own] = struct{}{}
 		}
-	}
-	excludedNames := make(map[string]struct{}, len(filter.ExcludeNames))
-	for _, name := range filter.ExcludeNames {
-		excludedNames[name] = struct{}{}
+		for _, ref := range filter.IncludeInheritedFrom.DeclaringTypes {
+			declaring, err := setup.resolveSymbolHandle(ref)
+			if err != nil {
+				return nil, err
+			}
+			if declaring != nil {
+				declaringTypes[declaring] = struct{}{}
+			}
+		}
 	}
 
 	var results []*MemberResponse
 	for _, prop := range setup.checker.GetPropertiesOfType(t) {
-		// Match names as the client sees them: the wire form of internal symbol
-		// names (e.g. ECMAScript private fields, `__#1@#x`) starts with underscores.
+		// Names are matched in their wire form, as the client sees them (e.g. an
+		// ECMAScript private field is `__#1@#x`).
 		name := ast.EscapeSymbolName(prop.Name())
-		if _, excluded := excludedNames[name]; excluded {
-			continue
-		}
-		if filter.ExcludeInternal && strings.HasPrefix(name, "_") {
-			continue
-		}
-		var docs SymbolDocumentation
-		docsRead := false
-		hasTag := func(tagName string) bool {
-			if !docsRead {
-				docs = symbolDocumentation(setup.checker, prop)
-				docsRead = true
-			}
-			for _, tag := range docs.Tags {
-				if tag.Name == tagName {
-					return true
-				}
-			}
-			return false
-		}
-		if filter.ExcludeInternal && hasTag("internal") {
-			continue
-		}
-		if filter.ExcludeDeprecated && hasTag("deprecated") {
+		if excludeName != nil && excludeName.MatchString(name) {
 			continue
 		}
 		decls := prop.Declarations()
@@ -5049,10 +5041,33 @@ func (s *Session) handleGetMembersOfType(ctx context.Context, params *GetMembers
 			continue
 		}
 		decl := decls[0]
-		if filter.ExcludePrivate && ast.HasSyntacticModifier(decl, ast.ModifierFlagsPrivate) {
-			continue
+		if len(visibilities) > 0 {
+			if _, ok := visibilities[memberVisibility(decl)]; !ok {
+				continue
+			}
 		}
 		isParameterProperty := decl.Kind == ast.KindParameter
+		if len(kinds) > 0 {
+			if _, ok := kinds[memberKind(decl, prop)]; !ok {
+				continue
+			}
+		}
+		var docs SymbolDocumentation
+		docsRead := false
+		if len(excludedTags) > 0 {
+			docs = symbolDocumentation(setup.checker, prop)
+			docsRead = true
+			excluded := false
+			for _, tag := range docs.Tags {
+				if _, ok := excludedTags[tag.Name]; ok {
+					excluded = true
+					break
+				}
+			}
+			if excluded {
+				continue
+			}
+		}
 		ownerNode := decl.Parent
 		if isParameterProperty && ownerNode != nil {
 			ownerNode = ownerNode.Parent
@@ -5063,12 +5078,8 @@ func (s *Session) handleGetMembersOfType(ctx context.Context, params *GetMembers
 				ownerSymbol = ownerType.Symbol()
 			}
 		}
-		if isParameterProperty {
-			if parameterPropertyOwner == nil || ownerSymbol != parameterPropertyOwner {
-				continue
-			}
-		} else if len(owners) > 0 {
-			if _, ok := owners[ownerSymbol]; !ok {
+		if declaringTypes != nil {
+			if _, ok := declaringTypes[ownerSymbol]; !ok {
 				continue
 			}
 		}
@@ -5093,6 +5104,31 @@ func (s *Session) handleGetMembersOfType(ctx context.Context, params *GetMembers
 		results = append(results, member)
 	}
 	return results, nil
+}
+
+// memberVisibility classifies a member declaration as "public", "protected" or
+// "private" (ECMAScript private names count as private).
+func memberVisibility(decl *ast.Node) string {
+	switch {
+	case ast.HasSyntacticModifier(decl, ast.ModifierFlagsPrivate), ast.IsPrivateIdentifierClassElementDeclaration(decl):
+		return "private"
+	case ast.HasSyntacticModifier(decl, ast.ModifierFlagsProtected):
+		return "protected"
+	}
+	return "public"
+}
+
+// memberKind classifies a member declaration for MemberFilter.Kinds.
+func memberKind(decl *ast.Node, symbol *ast.Symbol) string {
+	switch {
+	case decl.Kind == ast.KindParameter:
+		return "parameterProperty"
+	case ast.IsAccessor(decl):
+		return "accessor"
+	case ast.IsMethodDeclaration(decl), ast.IsMethodSignatureDeclaration(decl), symbol.Flags()&ast.SymbolFlagsMethod != 0:
+		return "method"
+	}
+	return "property"
 }
 
 // handleGetDocumentationComment returns the rendered documentation comment of a symbol as plain text.
