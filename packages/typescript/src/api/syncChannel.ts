@@ -138,6 +138,15 @@ export class SyncRpcChannel {
     // Spin-poll support (TSGO_SYNC_SPIN_US); see the constructor.
     private readHandle: { setBlocking?: ((value: boolean) => void) | undefined } | undefined;
     private spinNs = 0n;
+    // Adaptive spin (TSGO_SYNC_SPIN_ADAPTIVE=1): suspend spinning after
+    // consecutive budgets that elapsed without a reply (the server is doing
+    // long work per request), resume once blocking reads are again served
+    // within the budget. `spinning` tracks the mode; the fd is kept in the
+    // matching blocking state so the common path costs no extra fcntl.
+    private spinAdaptive = false;
+    private spinning = true;
+    private spinMisses = 0;
+    private spinHits = 0;
 
     // Read-ahead buffer – reduces readSync syscalls by buffering data from the pipe.
     private readBuf = Buffer.allocUnsafe(65536);
@@ -225,6 +234,7 @@ export class SyncRpcChannel {
             if (spinUs > 0 && typeof stdout._handle.setBlocking === "function") {
                 this.readHandle = stdout._handle;
                 this.spinNs = BigInt(Math.floor(spinUs * 1000));
+                this.spinAdaptive = process.env.TSGO_SYNC_SPIN_ADAPTIVE === "1";
                 this.readHandle.setBlocking!(false);
             }
 
@@ -572,10 +582,30 @@ export class SyncRpcChannel {
         if (this.spinNs === 0n) {
             return readSync(this.readFd, buffer, offset, length, null);
         }
+        const ADAPTIVE_WINDOW = 3;
+        if (this.spinAdaptive && !this.spinning) {
+            // Blocking mode (fd already blocking): time the wait and resume
+            // spinning after a few replies that arrived within the budget.
+            const start = process.hrtime.bigint();
+            const n = readSync(this.readFd, buffer, offset, length, null);
+            if (process.hrtime.bigint() - start < this.spinNs) {
+                if (++this.spinHits >= ADAPTIVE_WINDOW) {
+                    this.spinning = true;
+                    this.spinHits = 0;
+                    this.readHandle!.setBlocking!(false);
+                }
+            }
+            else {
+                this.spinHits = 0;
+            }
+            return n;
+        }
         const deadline = process.hrtime.bigint() + this.spinNs;
         for (;;) {
             try {
-                return readSync(this.readFd, buffer, offset, length, null);
+                const n = readSync(this.readFd, buffer, offset, length, null);
+                this.spinMisses = 0;
+                return n;
             }
             catch (e: unknown) {
                 const code = (e as NodeJS.ErrnoException)?.code;
@@ -588,7 +618,14 @@ export class SyncRpcChannel {
                 break;
             }
         }
+        // Budget spent: take one blocking read. In adaptive mode, enough
+        // consecutive misses switch to blocking mode until replies get fast again.
         this.readHandle!.setBlocking!(true);
+        if (this.spinAdaptive && ++this.spinMisses >= ADAPTIVE_WINDOW) {
+            this.spinning = false;
+            this.spinMisses = 0;
+            return readSync(this.readFd, buffer, offset, length, null);
+        }
         try {
             return readSync(this.readFd, buffer, offset, length, null);
         }

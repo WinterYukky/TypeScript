@@ -76,7 +76,7 @@ func (s *StdioServer) Run(ctx context.Context) error {
 		in := s.options.In
 		if f, ok := in.(*os.File); ok {
 			// Optional spin-poll before blocking reads (TSGO_SYNC_SPIN_US); see ipc.NewSpinReadCloser.
-			in = ipc.NewSpinReadCloser(f, ipc.SyncSpinFromEnv())
+			in = ipc.NewSpinReadCloser(f, ipc.SyncSpinFromEnv(), ipc.SyncSpinAdaptiveFromEnv())
 		}
 		t := ipc.NewStdioTransport(in, s.options.Out)
 		defer t.Close()
