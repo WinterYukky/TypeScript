@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+	"runtime/trace"
 	"sync"
 	"time"
 
@@ -64,9 +65,14 @@ func (c *SyncConn) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 
+		// Trace regions (no-ops unless an execution trace is being recorded):
+		// ipc.read covers the wait for the client's next message, ipc.handle the
+		// handler, ipc.write the response marshal + write.
+		readRegion := trace.StartRegion(ctx, "ipc.read")
 		c.mu.Lock()
 		msg, err := c.protocol.ReadMessage()
 		c.mu.Unlock()
+		readRegion.End()
 
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -149,12 +155,17 @@ func (c *SyncConn) handleRequest(ctx context.Context, msg *Message, depth int) (
 		}
 	}()
 
+	handleRegion := trace.StartRegion(ctx, "ipc.handle")
+	trace.Log(ctx, "method", msg.Method)
 	result, err = c.handler.HandleRequest(ctx, msg.Method, msg.Params)
+	handleRegion.End()
 
 	if c.timing != nil {
 		c.timing.record(msg.Method, time.Since(start))
 	}
 
+	writeRegion := trace.StartRegion(ctx, "ipc.write")
+	defer writeRegion.End()
 	c.lockTurn(depth)
 	defer c.mu.Unlock()
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/trace"
 	"strings"
 	"syscall"
 
@@ -76,6 +77,24 @@ func runAPI(args []string) int {
 	}
 
 	s := api.NewStdioServer(options)
+
+	// Diagnostics: TSGO_API_TRACE=<file> records a Go execution trace of the whole
+	// API session (see ipc.SyncConn for the per-request regions).
+	if tracePath := os.Getenv("TSGO_API_TRACE"); tracePath != "" {
+		traceFile, err := os.Create(tracePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TSGO_API_TRACE:", err)
+			return 1
+		}
+		if err := trace.Start(traceFile); err != nil {
+			fmt.Fprintln(os.Stderr, "TSGO_API_TRACE:", err)
+			return 1
+		}
+		defer func() {
+			trace.Stop()
+			traceFile.Close()
+		}()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
