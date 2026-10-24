@@ -2298,6 +2298,8 @@ export interface MemberFilterInput {
 /** One member returned by {@link Checker.getMembersOfType}. */
 export interface TypeMember {
     symbol: Symbol;
+    /** Reference of the symbol of the type declaring this member, when it could be determined. */
+    owner: ProtocolSymbolReference | undefined;
     isMethod: boolean;
     isParameterProperty: boolean;
     tags: readonly JSDocTagInfo[];
@@ -3205,6 +3207,7 @@ export class Checker {
             }
             members.push({
                 symbol: this.objectRegistry.getOrCreateSymbol(m.symbol),
+                owner: m.owner ?? undefined,
                 isMethod: m.isMethod ?? false,
                 isParameterProperty: m.isParameterProperty ?? false,
                 tags: m.tags ?? [],
