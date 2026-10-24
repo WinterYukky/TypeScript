@@ -68,6 +68,7 @@ import {
     toRootedPath,
 } from "../path.ts";
 import { prepareCompilerOptions } from "../prepareCompilerOptions.generated.ts";
+import type { SymbolReference as ProtocolSymbolReference } from "../proto.generated.ts";
 import type {
     BuildResponse,
     CleanBuildResponse,
