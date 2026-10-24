@@ -25,6 +25,7 @@ export class C extends Base {
     readonly _under = 4;
     /** @deprecated gone */
     readonly old = 5;
+    #ecmaPrivate = 6;
     constructor(public readonly fromCtor: string) { super(); }
     method(): void {}
 }
@@ -124,7 +125,8 @@ func TestGetMembersOfTypeFiltersLikeATraversal(t *testing.T) {
 	})
 	assert.NilError(t, err)
 	// baseProp is declared on Base (not an allowed owner); hidden (@internal), secret
-	// (private), _under (underscore) and old (@deprecated) are filtered out.
+	// (private), _under (underscore), #ecmaPrivate (wire name `__#N@#ecmaPrivate`)
+	// and old (@deprecated) are filtered out.
 	assert.DeepEqual(t, memberNames(members), []string{"own", "fromCtor", "method"})
 
 	byName := map[string]*MemberResponse{}

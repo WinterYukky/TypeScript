@@ -5015,7 +5015,9 @@ func (s *Session) handleGetMembersOfType(ctx context.Context, params *GetMembers
 
 	var results []*MemberResponse
 	for _, prop := range setup.checker.GetPropertiesOfType(t) {
-		name := prop.Name()
+		// Match names as the client sees them: the wire form of internal symbol
+		// names (e.g. ECMAScript private fields, `__#1@#x`) starts with underscores.
+		name := ast.EscapeSymbolName(prop.Name())
 		if _, excluded := excludedNames[name]; excluded {
 			continue
 		}
