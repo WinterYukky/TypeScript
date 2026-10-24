@@ -30,8 +30,14 @@ func SyncSpinAdaptiveFromEnv() bool {
 }
 
 // adaptiveWindow is the number of consecutive observations that flips the
-// adaptive spin state in either direction.
-const adaptiveWindow = 3
+// adaptive spin state in either direction, and adaptiveSlowWait the wait beyond
+// which the peer counts as idle rather than merely paying wake-up latency (a
+// blocked read on a host with deep idle states returns after ~200us even when
+// the peer answered immediately, so the budget itself cannot be the criterion).
+const (
+	adaptiveWindow   = 3
+	adaptiveSlowWait = time.Millisecond
+)
 
 // spinReadCloser wraps the sync connection's input: before each blocking Read
 // it polls the descriptor for readability for up to `spin`. Between the
@@ -64,10 +70,10 @@ func NewSpinReadCloser(f *os.File, spin time.Duration, adaptive bool) io.ReadClo
 func (r *spinReadCloser) Read(p []byte) (int, error) {
 	if r.adaptive && !r.spinning {
 		// Blocking mode: time the wait; a few short waits in a row mean the
-		// client is back to back-to-back requests, so resume spinning.
+		// peer is back to back-to-back messages, so resume spinning.
 		start := time.Now()
 		n, err := r.f.Read(p)
-		if time.Since(start) < r.spin {
+		if time.Since(start) < adaptiveSlowWait {
 			r.hits++
 			if r.hits >= adaptiveWindow {
 				r.spinning, r.hits = true, 0
@@ -77,30 +83,29 @@ func (r *spinReadCloser) Read(p []byte) (int, error) {
 		}
 		return n, err
 	}
+	start := time.Now()
 	fds := []unix.PollFd{{Fd: r.fd, Events: unix.POLLIN}}
-	deadline := time.Now().Add(r.spin)
-	ready := false
+	deadline := start.Add(r.spin)
 	for {
 		n, err := unix.Poll(fds, 0)
-		if n > 0 {
-			ready = true
-			break
-		}
-		if (err != nil && err != unix.EINTR) || time.Now().After(deadline) {
+		if n > 0 || (err != nil && err != unix.EINTR) || time.Now().After(deadline) {
 			break
 		}
 	}
+	n, err := r.f.Read(p)
 	if r.adaptive {
-		if ready {
-			r.misses = 0
-		} else {
+		// A spin that ran out AND was followed by a long wait means the peer is
+		// idle between messages: spinning only burns CPU, so suspend it.
+		if time.Since(start) > adaptiveSlowWait {
 			r.misses++
 			if r.misses >= adaptiveWindow {
 				r.spinning, r.misses = false, 0
 			}
+		} else {
+			r.misses = 0
 		}
 	}
-	return r.f.Read(p)
+	return n, err
 }
 
 func (r *spinReadCloser) Close() error {
