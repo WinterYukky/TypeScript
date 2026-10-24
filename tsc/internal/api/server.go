@@ -1,6 +1,7 @@
 package api
 
 import (
+	"os"
 	"context"
 	"fmt"
 	"io"
@@ -72,7 +73,12 @@ func (s *StdioServer) Run(ctx context.Context) error {
 		defer t.Close()
 		transport = t
 	} else {
-		t := ipc.NewStdioTransport(s.options.In, s.options.Out)
+		in := s.options.In
+		if f, ok := in.(*os.File); ok {
+			// Optional spin-poll before blocking reads (TSGO_SYNC_SPIN_US); see ipc.NewSpinReadCloser.
+			in = ipc.NewSpinReadCloser(f, ipc.SyncSpinFromEnv())
+		}
+		t := ipc.NewStdioTransport(in, s.options.Out)
 		defer t.Close()
 		transport = t
 	}
