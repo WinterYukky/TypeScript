@@ -1121,6 +1121,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetBaseTypes(ctx, parsed.(*CheckerTypeParams))
 	case string(MethodGetPropertiesOfType):
 		return s.handleGetPropertiesOfType(ctx, parsed.(*CheckerTypeParams))
+	case string(MethodGetMembersOfType):
+		return s.handleGetMembersOfType(ctx, parsed.(*GetMembersOfTypeParams))
 	case string(MethodGetApparentPropertiesOfType):
 		return s.handleGetApparentPropertiesOfType(ctx, parsed.(*GetTypePropertyParams))
 	case string(MethodGetApparentType):
@@ -1175,6 +1177,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetMemberInModuleExports(ctx, parsed.(*GetMemberInModuleExportsParams))
 	case string(MethodGetJSDocTags):
 		return s.handleGetJSDocTags(ctx, parsed.(*CheckerSymbolParams))
+	case string(MethodGetSymbolDocumentations):
+		return s.handleGetSymbolDocumentations(ctx, parsed.(*GetSymbolDocumentationsParams))
 	case string(MethodGetDocumentationComment):
 		return s.handleGetDocumentationComment(ctx, parsed.(*CheckerSymbolParams))
 	case string(MethodIsArrayType):
@@ -4929,6 +4933,162 @@ func (s *Session) handleGetJSDocTags(ctx context.Context, params *CheckerSymbolP
 	results := make([]*JSDocTagInfo, len(tags))
 	for i, tag := range tags {
 		results[i] = &JSDocTagInfo{Name: tag.Name, Text: tag.Text}
+	}
+	return results, nil
+}
+
+// symbolDocumentation collects the JSDoc tags and documentation comment of a symbol
+// exactly as getJsDocTags and getDocumentationComment report them.
+func symbolDocumentation(c *checker.Checker, symbol *ast.Symbol) SymbolDocumentation {
+	tags := ls.GetSymbolJSDocTags(symbol)
+	var infos []*JSDocTagInfo
+	if len(tags) > 0 {
+		infos = make([]*JSDocTagInfo, len(tags))
+		for i, tag := range tags {
+			infos[i] = &JSDocTagInfo{Name: tag.Name, Text: tag.Text}
+		}
+	}
+	return SymbolDocumentation{Tags: infos, Comment: ls.GetSymbolDocumentationComment(c, symbol)}
+}
+
+// handleGetSymbolDocumentations returns the JSDoc tags and documentation comment of many
+// symbols in one round trip (element i corresponds to Symbols[i]; a symbol that does not
+// resolve yields an empty element).
+func (s *Session) handleGetSymbolDocumentations(ctx context.Context, params *GetSymbolDocumentationsParams) ([]SymbolDocumentation, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	results := make([]SymbolDocumentation, len(params.Symbols))
+	for i, ref := range params.Symbols {
+		symbol, err := setup.resolveSymbolHandle(ref)
+		if err != nil {
+			return nil, err
+		}
+		if symbol == nil {
+			continue
+		}
+		results[i] = symbolDocumentation(setup.checker, symbol)
+	}
+	return results, nil
+}
+
+// handleGetMembersOfType returns the properties of a type that pass the filter, each with
+// its documentation, declaring-type symbol and (optionally) declared type, so that a
+// traversal of a type's members costs one round trip instead of several per member.
+func (s *Session) handleGetMembersOfType(ctx context.Context, params *GetMembersOfTypeParams) ([]*MemberResponse, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	t, err := setup.resolveTypeHandle(params.Type)
+	if err != nil {
+		return nil, err
+	}
+	filter := &params.Filter
+
+	owners := make(map[*ast.Symbol]struct{}, len(filter.OwnerSymbols))
+	for _, ref := range filter.OwnerSymbols {
+		owner, err := setup.resolveSymbolHandle(ref)
+		if err != nil {
+			return nil, err
+		}
+		if owner != nil {
+			owners[owner] = struct{}{}
+		}
+	}
+	var parameterPropertyOwner *ast.Symbol
+	if filter.ParameterPropertyOwner != nil {
+		parameterPropertyOwner, err = setup.resolveSymbolHandle(*filter.ParameterPropertyOwner)
+		if err != nil {
+			return nil, err
+		}
+	}
+	excludedNames := make(map[string]struct{}, len(filter.ExcludeNames))
+	for _, name := range filter.ExcludeNames {
+		excludedNames[name] = struct{}{}
+	}
+
+	var results []*MemberResponse
+	for _, prop := range setup.checker.GetPropertiesOfType(t) {
+		name := prop.Name()
+		if _, excluded := excludedNames[name]; excluded {
+			continue
+		}
+		if filter.ExcludeInternal && strings.HasPrefix(name, "_") {
+			continue
+		}
+		var docs SymbolDocumentation
+		docsRead := false
+		hasTag := func(tagName string) bool {
+			if !docsRead {
+				docs = symbolDocumentation(setup.checker, prop)
+				docsRead = true
+			}
+			for _, tag := range docs.Tags {
+				if tag.Name == tagName {
+					return true
+				}
+			}
+			return false
+		}
+		if filter.ExcludeInternal && hasTag("internal") {
+			continue
+		}
+		if filter.ExcludeDeprecated && hasTag("deprecated") {
+			continue
+		}
+		decls := prop.Declarations()
+		if len(decls) == 0 {
+			continue
+		}
+		decl := decls[0]
+		if filter.ExcludePrivate && ast.HasSyntacticModifier(decl, ast.ModifierFlagsPrivate) {
+			continue
+		}
+		isParameterProperty := decl.Kind == ast.KindParameter
+		ownerNode := decl.Parent
+		if isParameterProperty && ownerNode != nil {
+			ownerNode = ownerNode.Parent
+		}
+		var ownerSymbol *ast.Symbol
+		if ownerNode != nil {
+			if ownerType := setup.checker.GetTypeAtLocation(ownerNode); ownerType != nil {
+				ownerSymbol = ownerType.Symbol()
+			}
+		}
+		if isParameterProperty {
+			if parameterPropertyOwner == nil || ownerSymbol != parameterPropertyOwner {
+				continue
+			}
+		} else if len(owners) > 0 {
+			if _, ok := owners[ownerSymbol]; !ok {
+				continue
+			}
+		}
+		if !docsRead {
+			docs = symbolDocumentation(setup.checker, prop)
+		}
+		member := &MemberResponse{
+			Symbol:              setup.newSymbolResponse(prop),
+			IsMethod:            prop.Flags()&ast.SymbolFlagsMethod != 0,
+			IsParameterProperty: isParameterProperty,
+			Tags:                docs.Tags,
+			Comment:             docs.Comment,
+		}
+		if ownerSymbol != nil {
+			if ownerResponse := setup.newSymbolResponse(ownerSymbol); ownerResponse != nil {
+				member.Owner = &ownerResponse.Reference
+			}
+		}
+		if filter.IncludeDeclaredType && !member.IsMethod {
+			member.DeclaredType = setup.sd.newTypeResponse(setup.projectID, setup.checker.GetTypeOfSymbolAtLocation(prop, decl), setup.checker)
+		}
+		results = append(results, member)
 	}
 	return results, nil
 }

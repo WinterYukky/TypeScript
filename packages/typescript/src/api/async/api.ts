@@ -111,6 +111,7 @@ import type {
     SourceFileDescriptor,
     SourceFileMetadata,
     StaticModuleResolution,
+    SymbolDocumentation,
     SymbolPropertyMethod,
     SymbolReference,
     SymbolResponse,
@@ -2273,6 +2274,28 @@ function toEmitOutput(response: ProtocolEmitOutputResponse): EmitOutput {
     };
 }
 
+/** Filter for {@link Checker.getMembersOfType}; see `MemberFilter` for the semantics of each field. */
+export interface MemberFilterInput {
+    excludeInternal?: boolean;
+    excludePrivate?: boolean;
+    excludeDeprecated?: boolean;
+    excludeNames?: readonly string[];
+    ownerSymbols?: readonly Symbol[];
+    parameterPropertyOwner?: Symbol;
+    includeDeclaredType?: boolean;
+}
+
+/** One member returned by {@link Checker.getMembersOfType}. */
+export interface TypeMember {
+    symbol: Symbol;
+    isMethod: boolean;
+    isParameterProperty: boolean;
+    tags: readonly JSDocTagInfo[];
+    comment: string;
+    /** `getTypeOfSymbolAtLocation(symbol, firstDeclaration)`; only with `includeDeclaredType`. */
+    declaredType: Type | undefined;
+}
+
 export class Checker {
     private snapshotId: number;
     private project: Project;
@@ -3120,6 +3143,62 @@ export class Checker {
             project: this.project.handle,
             symbol: symbol.reference,
         });
+    }
+
+    /**
+     * The JSDoc tags and documentation comment of many symbols in one round trip.
+     * Element i corresponds to `symbols[i]` and equals what `getJsDocTagsOfSymbol`
+     * and `getDocumentationCommentOfSymbol` return for that symbol.
+     */
+    async getSymbolDocumentations(symbols: readonly Symbol[]): Promise<SymbolDocumentation[]> {
+        if (symbols.length === 0) {
+            return [];
+        }
+        const data = await this.client.apiRequest("getSymbolDocumentations", {
+            snapshot: this.snapshotId,
+            project: this.project.handle,
+            symbols: symbols.map(symbol => symbol.reference),
+        });
+        return data.map(d => ({ tags: d.tags ?? [], comment: d.comment ?? "" }));
+    }
+
+    /**
+     * The properties of a type that pass `filter`, each with its documentation, the
+     * symbol of the type declaring it and (when requested) its declared type, in one
+     * round trip. Designed for traversals that render every surviving member: the
+     * filter lets the caller describe exactly which members it will visit so no type
+     * is materialized for a member that would have been skipped.
+     */
+    async getMembersOfType(type: Type, filter: MemberFilterInput = {}): Promise<TypeMember[]> {
+        const data = await this.client.apiRequest("getMembersOfType", {
+            snapshot: this.snapshotId,
+            project: this.project.handle,
+            type: type.id,
+            filter: {
+                excludeInternal: filter.excludeInternal,
+                excludePrivate: filter.excludePrivate,
+                excludeDeprecated: filter.excludeDeprecated,
+                excludeNames: filter.excludeNames ? [...filter.excludeNames] : undefined,
+                ownerSymbols: filter.ownerSymbols?.map(symbol => symbol.reference),
+                parameterPropertyOwner: filter.parameterPropertyOwner?.reference,
+                includeDeclaredType: filter.includeDeclaredType,
+            },
+        });
+        const members: TypeMember[] = [];
+        for (const m of data ?? []) {
+            if (!m.symbol) {
+                continue;
+            }
+            members.push({
+                symbol: this.objectRegistry.getOrCreateSymbol(m.symbol),
+                isMethod: m.isMethod ?? false,
+                isParameterProperty: m.isParameterProperty ?? false,
+                tags: m.tags ?? [],
+                comment: m.comment ?? "",
+                declaredType: m.declaredType ? this.objectRegistry.getOrCreateType(m.declaredType) : undefined,
+            });
+        }
+        return members;
     }
 
     /**

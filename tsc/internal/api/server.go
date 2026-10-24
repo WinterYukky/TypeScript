@@ -1,10 +1,10 @@
 package api
 
 import (
-	"os"
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/microsoft/TypeScript/tsc/internal/bundled"
 	"github.com/microsoft/TypeScript/tsc/internal/contentmapper"

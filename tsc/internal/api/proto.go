@@ -187,6 +187,7 @@ const (
 	MethodGetTypePredicateOfSignature       Method = "getTypePredicateOfSignature"
 	MethodGetBaseTypes                      Method = "getBaseTypes"
 	MethodGetPropertiesOfType               Method = "getPropertiesOfType"
+	MethodGetMembersOfType                  Method = "getMembersOfType"
 	MethodGetApparentPropertiesOfType       Method = "getApparentPropertiesOfType"
 	MethodGetApparentType                   Method = "getApparentType"
 	MethodGetReducedType                    Method = "getReducedType"
@@ -216,6 +217,7 @@ const (
 	MethodGetExportsOfModule                Method = "getExportsOfModule"
 	MethodGetMemberInModuleExports          Method = "getMemberInModuleExports"
 	MethodGetJSDocTags                      Method = "getJsDocTags"
+	MethodGetSymbolDocumentations           Method = "getSymbolDocumentations"
 	MethodGetDocumentationComment           Method = "getDocumentationComment"
 	MethodIsArrayType                       Method = "isArrayType"
 	MethodIsReadonlySymbol                  Method = "isReadonlySymbol"
@@ -710,6 +712,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodGetTypePredicateOfSignature:       unmarshallerFor[CheckerSignatureParams],
 	MethodGetBaseTypes:                      unmarshallerFor[CheckerTypeParams],
 	MethodGetPropertiesOfType:               unmarshallerFor[CheckerTypeParams],
+	MethodGetMembersOfType:                  unmarshallerFor[GetMembersOfTypeParams],
 	MethodGetApparentPropertiesOfType:       unmarshallerFor[GetTypePropertyParams],
 	MethodGetApparentType:                   unmarshallerFor[GetTypePropertyParams],
 	MethodGetReducedType:                    unmarshallerFor[GetTypePropertyParams],
@@ -737,6 +740,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodGetExportsOfModule:                unmarshallerFor[CheckerSymbolParams],
 	MethodGetMemberInModuleExports:          unmarshallerFor[GetMemberInModuleExportsParams],
 	MethodGetJSDocTags:                      unmarshallerFor[CheckerSymbolParams],
+	MethodGetSymbolDocumentations:           unmarshallerFor[GetSymbolDocumentationsParams],
 	MethodGetDocumentationComment:           unmarshallerFor[CheckerSymbolParams],
 	MethodIsArrayType:                       unmarshallerFor[CheckerTypeParams],
 	MethodIsReadonlySymbol:                  unmarshallerFor[CheckerSymbolParams],
@@ -1867,6 +1871,67 @@ type CheckerSymbolParams struct {
 type JSDocTagInfo struct {
 	Name string `json:"name"`
 	Text string `json:"text,omitempty"`
+}
+
+// GetSymbolDocumentationsParams are parameters for getSymbolDocumentations: the JSDoc
+// tags and documentation comment of many symbols in one request.
+type GetSymbolDocumentationsParams struct {
+	Snapshot SnapshotID        `json:"snapshot"`
+	Project  project.Handle    `json:"project"`
+	Symbols  []SymbolReference `json:"symbols"`
+}
+
+// SymbolDocumentation is one element of a getSymbolDocumentations response; it equals
+// the results of getJsDocTags and getDocumentationComment for the same symbol.
+type SymbolDocumentation struct {
+	Tags    []*JSDocTagInfo `json:"tags,omitempty"`
+	Comment string          `json:"comment,omitempty"`
+}
+
+// MemberFilter selects which properties of a type getMembersOfType returns. It exists so
+// that a traversal tool can describe the members it will certainly visit and receive their
+// declared types in the same response, without the server materializing types for
+// members the tool would have skipped.
+type MemberFilter struct {
+	// Drop members tagged @internal or whose name starts with an underscore.
+	ExcludeInternal bool `json:"excludeInternal,omitempty"`
+	// Drop members whose first declaration has the `private` modifier.
+	ExcludePrivate bool `json:"excludePrivate,omitempty"`
+	// Drop members tagged @deprecated.
+	ExcludeDeprecated bool `json:"excludeDeprecated,omitempty"`
+	// Drop members with these names (e.g. "prototype" on a class's static side).
+	ExcludeNames []string `json:"excludeNames,omitempty"`
+	// When non-empty, keep a member only if the type declared at its owner node (the
+	// declaration's parent, or grandparent for a constructor parameter property) has
+	// one of these symbols. This is how a tool separates own and erased-base members
+	// from members of named bases it lists elsewhere.
+	OwnerSymbols []SymbolReference `json:"ownerSymbols,omitempty"`
+	// Constructor parameter properties are kept only when their owner type has this
+	// symbol; when nil, parameter properties are dropped.
+	ParameterPropertyOwner *SymbolReference `json:"parameterPropertyOwner,omitempty"`
+	// Include the declared type of each non-method member (getTypeOfSymbolAtLocation at
+	// its first declaration).
+	IncludeDeclaredType bool `json:"includeDeclaredType,omitempty"`
+}
+
+// GetMembersOfTypeParams are parameters for getMembersOfType.
+type GetMembersOfTypeParams struct {
+	Snapshot SnapshotID     `json:"snapshot"`
+	Project  project.Handle `json:"project"`
+	Type     TypeID         `json:"type"`
+	Filter   MemberFilter   `json:"filter"`
+}
+
+// MemberResponse is one property of a type with the information a traversal needs to
+// decide how to render it, in a single round trip.
+type MemberResponse struct {
+	Symbol              *SymbolResponse  `json:"symbol"`
+	Owner               *SymbolReference `json:"owner,omitempty"`
+	IsMethod            bool             `json:"isMethod,omitempty"`
+	IsParameterProperty bool             `json:"isParameterProperty,omitempty"`
+	Tags                []*JSDocTagInfo  `json:"tags,omitempty"`
+	Comment             string           `json:"comment,omitempty"`
+	DeclaredType        *TypeResponse    `json:"declaredType,omitempty"`
 }
 
 // CheckerSignatureParams are parameters for checker methods that operate on a signature.
