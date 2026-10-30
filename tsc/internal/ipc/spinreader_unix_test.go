@@ -52,7 +52,7 @@ func TestSpinReadCloserReadsDataAvailableWithinBudget(t *testing.T) {
 
 	go func() {
 		time.Sleep(5 * time.Millisecond)
-		_, _ = w.Write([]byte("hello"))
+		_, _ = w.WriteString("hello")
 	}()
 
 	start := time.Now()
@@ -70,7 +70,7 @@ func TestSpinReadCloserFallsBackToBlockingReadAfterBudget(t *testing.T) {
 
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		_, _ = w.Write([]byte("late"))
+		_, _ = w.WriteString("late")
 	}()
 
 	buf := make([]byte, 16)
@@ -104,7 +104,7 @@ func TestSpinReadCloserAdaptsToTheWriterCadence(t *testing.T) {
 		t.Helper()
 		go func() {
 			time.Sleep(delay)
-			_, _ = w.Write([]byte("x"))
+			_, _ = w.WriteString("x")
 		}()
 		n, err := rc.Read(buf)
 		assert.NilError(t, err)
@@ -123,7 +123,7 @@ func TestSpinReadCloserAdaptsToTheWriterCadence(t *testing.T) {
 	// Messages that are already waiting: back-to-back traffic resumes spinning.
 	for range adaptiveWindow {
 		assert.Assert(t, !rc.state.spinning)
-		_, err := w.Write([]byte("y"))
+		_, err := w.WriteString("y")
 		assert.NilError(t, err)
 		n, err := rc.Read(buf)
 		assert.NilError(t, err)
