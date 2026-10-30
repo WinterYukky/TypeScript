@@ -63,6 +63,23 @@ function sleep(ms: number): void {
     Atomics.wait(sleepBuf ??= new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+// ── Spin-poll before blocking reads ─────────────────────────────────
+// Budget (microseconds) spent retrying a non-blocking read before falling back
+// to a blocking one; TSGO_SYNC_SPIN_US overrides it, 0 disables spinning.
+const DEFAULT_SYNC_SPIN_US = 100;
+// Adaptive mode flips after this many consecutive observations in one direction;
+// a wait longer than SPIN_SLOW_WAIT_NS counts the peer as idle between messages.
+const SPIN_ADAPTIVE_WINDOW = 3;
+const SPIN_SLOW_WAIT_NS = 1_000_000n;
+
+function parseSyncSpinUs(value: string | undefined): number {
+    if (value === undefined || value === "") {
+        return DEFAULT_SYNC_SPIN_US;
+    }
+    const spinUs = Number.parseInt(value, 10);
+    return Number.isFinite(spinUs) && spinUs > 0 ? spinUs : 0;
+}
+
 // ── Global cleanup tracking ─────────────────────────────────────────
 // Track all live child processes so they can be killed on process exit.
 // This mimics the auto-cleanup behavior of the native libsyncrpc module,
@@ -142,6 +159,17 @@ export class SyncRpcChannel {
 
     private headerBuf = Buffer.allocUnsafe(4);
 
+    // Spin-poll before blocking reads (TSGO_SYNC_SPIN_US); see the constructor.
+    // `spinning` is the current adaptive mode and the read fd is kept in the
+    // matching blocking state, so the common path costs no extra fcntl.
+    private readHandle: StdioHandle | undefined;
+    private readonly hrtime = nodeProcess().hrtime.bigint;
+    private spinNs = 0n;
+    private spinAdaptive = false;
+    private spinning = true;
+    private spinMisses = 0;
+    private spinHits = 0;
+
     // Read-ahead buffer – reduces readSync syscalls by buffering data from the pipe.
     private readBuf = Buffer.allocUnsafe(65536);
     private readBufPos = 0;
@@ -220,6 +248,24 @@ export class SyncRpcChannel {
             // arrives, matching the behavior of the native libsyncrpc.
             stdout._handle.setBlocking?.(true);
             stdin._handle.setBlocking?.(true);
+
+            // Spin-poll before blocking reads: the server's reply usually
+            // arrives within tens of microseconds, and blocking right away
+            // lets the CPU enter a deep idle state whose exit latency (~190us
+            // for C6 on current Intel hosts) then dominates the round trip.
+            // Rest the read side in non-blocking mode and retry EAGAIN for up
+            // to the budget before taking one blocking read. This costs one
+            // otherwise idle core while the server is busy; the adaptive mode
+            // (default) gives it back when the server takes long per request.
+            // TSGO_SYNC_SPIN_US=0 disables it, TSGO_SYNC_SPIN_ADAPTIVE=0 keeps
+            // spinning unconditionally.
+            const spinUs = parseSyncSpinUs(process.env.TSGO_SYNC_SPIN_US);
+            if (spinUs > 0 && typeof stdout._handle.setBlocking === "function") {
+                this.readHandle = stdout._handle;
+                this.spinNs = BigInt(spinUs) * 1000n;
+                this.spinAdaptive = process.env.TSGO_SYNC_SPIN_ADAPTIVE !== "0";
+                this.readHandle.setBlocking!(false);
+            }
 
             // Prevent Node's event-loop from reading stdout or keeping the
             // process alive – we will use fs.readSync exclusively.
@@ -558,6 +604,73 @@ export class SyncRpcChannel {
     }
 
     /**
+     * readSync on the pipe fd with the optional spin budget: retry EAGAIN on
+     * the non-blocking descriptor until the budget is spent, then take one
+     * blocking read. In adaptive mode, a few consecutive waits longer than
+     * SPIN_SLOW_WAIT_NS switch the fd to blocking mode (the server is slow
+     * between replies, spinning only burns CPU); a few consecutive shorter
+     * waits switch it back. The budget itself is not the criterion: a blocked
+     * read on a host with deep idle states returns after ~200us even when the
+     * reply was written at once.
+     */
+    private readFromPipe(buffer: Buffer, offset: number, length: number): number {
+        if (this.spinNs === 0n) {
+            return this.fs.readSync(this.readFd, buffer, offset, length, null);
+        }
+        const start = this.hrtime();
+        if (this.spinAdaptive && !this.spinning) {
+            const n = this.fs.readSync(this.readFd, buffer, offset, length, null);
+            if (this.hrtime() - start < SPIN_SLOW_WAIT_NS) {
+                if (++this.spinHits >= SPIN_ADAPTIVE_WINDOW) {
+                    this.spinning = true;
+                    this.spinHits = 0;
+                    this.readHandle!.setBlocking!(false);
+                }
+            }
+            else {
+                this.spinHits = 0;
+            }
+            return n;
+        }
+        const deadline = start + this.spinNs;
+        for (;;) {
+            try {
+                const n = this.fs.readSync(this.readFd, buffer, offset, length, null);
+                this.spinMisses = 0;
+                return n;
+            }
+            catch (e: unknown) {
+                const code = (e as NodeJS.ErrnoException)?.code;
+                if (code !== "EAGAIN" && code !== "EWOULDBLOCK") {
+                    throw e;
+                }
+                if (this.hrtime() >= deadline) {
+                    break;
+                }
+            }
+        }
+        // Budget spent: take one blocking read.
+        this.readHandle!.setBlocking!(true);
+        try {
+            return this.fs.readSync(this.readFd, buffer, offset, length, null);
+        }
+        finally {
+            if (this.spinAdaptive && this.hrtime() - start > SPIN_SLOW_WAIT_NS) {
+                if (++this.spinMisses >= SPIN_ADAPTIVE_WINDOW) {
+                    this.spinning = false;
+                    this.spinMisses = 0;
+                }
+            }
+            else {
+                this.spinMisses = 0;
+            }
+            if (this.spinning) {
+                this.readHandle!.setBlocking!(false);
+            }
+        }
+    }
+
+    /**
      * Fill the internal read-ahead buffer from the pipe fd.
      * Retries on EAGAIN for non-blocking mode compatibility.
      */
@@ -566,7 +679,7 @@ export class SyncRpcChannel {
         this.readBufLen = 0;
         for (;;) {
             try {
-                const n = this.fs.readSync(this.readFd, this.readBuf, 0, this.readBuf.length, null);
+                const n = this.readFromPipe(this.readBuf, 0, this.readBuf.length);
                 if (n === 0) {
                     throw this.eofError();
                 }
@@ -604,7 +717,7 @@ export class SyncRpcChannel {
                 // Remaining data is larger than read buffer; read directly
                 // into the target to avoid unnecessary copying.
                 try {
-                    const n = this.fs.readSync(this.readFd, buffer, pos, length - pos, null);
+                    const n = this.readFromPipe(buffer, pos, length - pos);
                     if (n === 0) {
                         throw this.eofError();
                     }
