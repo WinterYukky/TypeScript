@@ -27,14 +27,17 @@ func TestNewSpinReadCloserReturnsInputUnchanged(t *testing.T) {
 	r, _ := newTestPipe(t)
 
 	t.Run("when spinning is disabled", func(t *testing.T) {
+		t.Parallel()
 		assert.Assert(t, NewSpinReadCloser(r, 0, true) == io.ReadCloser(r))
 		assert.Assert(t, NewSpinReadCloser(r, -time.Microsecond, true) == io.ReadCloser(r))
 	})
 	t.Run("when the reader has no file descriptor", func(t *testing.T) {
+		t.Parallel()
 		rc := io.NopCloser(nil)
 		assert.Assert(t, NewSpinReadCloser(rc, DefaultSyncSpin, true) == rc)
 	})
 	t.Run("otherwise wraps the reader", func(t *testing.T) {
+		t.Parallel()
 		_, ok := NewSpinReadCloser(r, DefaultSyncSpin, true).(*spinReadCloser)
 		assert.Assert(t, ok)
 	})
@@ -49,7 +52,7 @@ func TestSpinReadCloserReadsDataAvailableWithinBudget(t *testing.T) {
 
 	go func() {
 		time.Sleep(5 * time.Millisecond)
-		w.Write([]byte("hello"))
+		_, _ = w.Write([]byte("hello"))
 	}()
 
 	start := time.Now()
@@ -67,7 +70,7 @@ func TestSpinReadCloserFallsBackToBlockingReadAfterBudget(t *testing.T) {
 
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		w.Write([]byte("late"))
+		_, _ = w.Write([]byte("late"))
 	}()
 
 	buf := make([]byte, 16)
@@ -101,7 +104,7 @@ func TestSpinReadCloserAdaptsToTheWriterCadence(t *testing.T) {
 		t.Helper()
 		go func() {
 			time.Sleep(delay)
-			w.Write([]byte("x"))
+			_, _ = w.Write([]byte("x"))
 		}()
 		n, err := rc.Read(buf)
 		assert.NilError(t, err)
@@ -120,7 +123,8 @@ func TestSpinReadCloserAdaptsToTheWriterCadence(t *testing.T) {
 	// Messages that are already waiting: back-to-back traffic resumes spinning.
 	for range adaptiveWindow {
 		assert.Assert(t, !rc.state.spinning)
-		w.Write([]byte("y"))
+		_, err := w.Write([]byte("y"))
+		assert.NilError(t, err)
 		n, err := rc.Read(buf)
 		assert.NilError(t, err)
 		assert.Equal(t, n, 1)
