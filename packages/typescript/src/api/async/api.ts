@@ -111,7 +111,6 @@ import type {
     SourceFileDescriptor,
     SourceFileMetadata,
     StaticModuleResolution,
-    SymbolDocumentation,
     SymbolPropertyMethod,
     SymbolReference,
     SymbolResponse,
@@ -254,7 +253,6 @@ export type {
     StringMappingType,
     StructuredType,
     SubstitutionType,
-    SymbolDocumentation,
     SyntheticProjectId,
     TemplateLiteralType,
     TextEdit,
@@ -2317,6 +2315,12 @@ export interface MemberFilterInput {
      */
     includeInheritedFrom?: { all?: boolean; declaringTypes?: readonly Symbol[]; };
     includeDeclaredType?: boolean;
+}
+
+/** The documentation of one symbol, as returned by {@link Checker.getSymbolDocumentations}. */
+export interface SymbolDocumentation {
+    tags: readonly JSDocTagInfo[];
+    comment: string;
 }
 
 /** One member returned by {@link Checker.getMembersOfType}. */
